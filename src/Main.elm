@@ -9,6 +9,7 @@ port module Main exposing
 import Browser
 import Browser.Dom as Dom
 import Browser.Events as BE
+import Browser.Navigation as Nav
 import FormatNumber
 import FormatNumber.Locales exposing (Decimals(..), frenchLocale)
 import Html exposing (..)
@@ -25,6 +26,8 @@ import String.Extra as SE
 import String.Interpolate exposing (interpolate)
 import Task
 import Time exposing (Posix)
+import Url
+import Url.Parser exposing (Parser, (</>), int, map, oneOf, s, string)
 import Words
 
 
@@ -115,7 +118,8 @@ type Msg
     | StoreChanged String
     | Submit
     | SwitchLang Lang
-
+    | LinkClicked Browser.UrlRequest
+    | UrlChanged Url.Url
 
 numberOfLetters : Int
 numberOfLetters =
@@ -134,22 +138,30 @@ defaultStore lang =
     }
 
 
-init : Flags -> ( Model, Cmd Msg )
-init flags =
+init : Flags -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url key =
     let
         store =
             flags.rawStore
                 |> Decode.decodeString decodeStore
 
+        (WordRef lang wordid) = url
+                -- |> Url.Parser.parse routeParser
+                |> urlFragmentToPath 
+                |> Url.Parser.parse routeParser
+                |> Maybe.withDefault (WordRef flags.lang "unknown") 
+
         ( model, cmds ) =
             case store of
                 Ok store_ ->
-                    ( initialModel store_, Cmd.none )
+                    ( initialModel (defaultStore (I18n.parseLang lang)), Cmd.none )
+                    -- ( initialModel store_, Cmd.none )
 
                 Err error ->
                     let
                         newStore =
-                            defaultStore (I18n.parseLang flags.lang)
+                            defaultStore (I18n.parseLang lang)
+                            -- defaultStore (I18n.parseLang flags.lang)
 
                         newModel =
                             initialModel newStore
@@ -181,7 +193,24 @@ initialModel store =
     , time = Time.millisToPosix 0
     }
 
+type alias WordId =
+    String
 
+type Route
+  = WordRef String String
+  -- = WordRef Lang WordId
+
+
+-- cf. https://github.com/elm/url/issues/24
+urlFragmentToPath : Url.Url -> Url.Url
+urlFragmentToPath url =
+    { url | path = Maybe.withDefault "" url.fragment, fragment = Nothing }
+
+routeParser : Parser (Route -> a) a
+routeParser =
+  oneOf
+    [ Url.Parser.map WordRef  ( string </> string )
+    ]
 
 -- sampleOngoingState : GameState
 -- sampleOngoingState =
@@ -398,6 +427,12 @@ update msg ({ store } as model) =
             ( { model | state = Ongoing word guesses newInput Nothing }
             , Cmd.none
             )
+
+        ( LinkClicked _, _ ) ->
+            ( model, Cmd.none )
+
+        ( UrlChanged _, _ ) ->
+            ( model, Cmd.none )
 
         ( KeyPressed _, _ ) ->
             ( model, Cmd.none )
@@ -1035,9 +1070,11 @@ viewError lang error =
         ]
 
 
-view : Model -> Html Msg
+-- view : Model -> Html Msg
+view : Model -> Browser.Document Msg
 view ({ store, state } as model) =
-    layout model
+    { title = "loading", body = [
+        layout model
         (case state of
             Idle ->
                 [ I18n.htmlText store.lang I18n.GameLoading ]
@@ -1074,6 +1111,7 @@ view ({ store, state } as model) =
                 , viewKeyboard store.lang guesses
                 ]
         )
+        ] }
 
 
 
@@ -1200,11 +1238,13 @@ decodeKey =
 
 main : Program Flags Model Msg
 main =
-    Browser.element
+    Browser.application
         { init = init
         , view = view
         , update = update
         , subscriptions = subscriptions
+        , onUrlChange = UrlChanged
+        , onUrlRequest = LinkClicked
         }
 
 
