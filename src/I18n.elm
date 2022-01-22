@@ -224,7 +224,6 @@ langToString lang =
         French ->
             "Français"
 
-
 langFromString : String -> Lang
 langFromString string =
     case string of
@@ -233,3 +232,20 @@ langFromString string =
 
         _ ->
             English
+
+langToCode : Lang -> String
+langToCode lang =
+    case lang of
+        English ->
+            "en"
+
+        French ->
+            "fr"
+
+langFromCode : String -> Lang
+langFromCode code =
+    case code of
+        "fr" -> 
+            French 
+        _ ->
+            English 

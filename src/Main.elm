@@ -28,8 +28,8 @@ import Task
 import Time exposing (Posix)
 import Url
 import Url.Parser exposing (Parser, (</>), int, map, oneOf, s, string)
+import Hashids
 import Words
-
 
 type alias Flags =
     { lang : String
@@ -52,9 +52,20 @@ type alias Log =
     }
 
 
+type alias WordRef =
+    { lang : String
+    , id : String
+    }
+
+wordRefToString : WordRef -> String 
+wordRefToString wordRef = wordRef.lang ++ "-" ++ wordRef.id
+
+
 type alias Model =
     { store : Store
+    , key : Nav.Key
     , words : List WordToFind
+    , wordRef : WordRef 
     , state : GameState
     , modal : Maybe Modal
     , time : Posix
@@ -112,7 +123,7 @@ type Msg
     | KeyPressed Char
     | NewGame
     | NewTime Posix
-    | NewWord (Maybe WordToFind)
+    | NewWord (String, Maybe WordToFind)
     | NoOp
     | OpenModal Modal
     | StoreChanged String
@@ -120,6 +131,7 @@ type Msg
     | SwitchLang Lang
     | LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
+    | WordOfTheDay
 
 numberOfLetters : Int
 numberOfLetters =
@@ -145,26 +157,37 @@ init flags url key =
             flags.rawStore
                 |> Decode.decodeString decodeStore
 
-        (WordRef lang wordid) = url
-                -- |> Url.Parser.parse routeParser
+        (WordUri lang wordid) = url
                 |> urlFragmentToPath 
                 |> Url.Parser.parse routeParser
-                |> Maybe.withDefault (WordRef flags.lang "unknown") 
+                |> Maybe.withDefault (WordUri flags.lang "unknown") 
+
+        wordRef = { lang = lang, id = wordid }
+        maybeWordToFind = wordFromRef wordRef
+        modelState = case maybeWordToFind of
+                Nothing -> Idle
+                Just wordToFind -> Ongoing wordToFind [] "" Nothing
+        initWordCmd = case maybeWordToFind of 
+                -- Nothing -> Random.generate NewWord (randomWord model.words)
+                Nothing ->
+                    let 
+                        words = getWords (I18n.parseLang lang)
+                    in  
+                        Task.perform (\word -> NewWord word) (wordOfTheDayTask words) 
+                _ -> Cmd.none
 
         ( model, cmds ) =
             case store of
                 Ok store_ ->
-                    ( initialModel (defaultStore (I18n.parseLang lang)), Cmd.none )
-                    -- ( initialModel store_, Cmd.none )
+                    ( initialModel (defaultStore (I18n.parseLang lang) ) key wordRef modelState, Cmd.none )
 
                 Err error ->
                     let
                         newStore =
                             defaultStore (I18n.parseLang lang)
-                            -- defaultStore (I18n.parseLang flags.lang)
 
                         newModel =
-                            initialModel newStore
+                            initialModel newStore key wordRef Idle
                     in
                     ( { newModel
                         | state =
@@ -178,28 +201,26 @@ init flags url key =
     in
     ( model
     , Cmd.batch
-        [ Random.generate NewWord (randomWord model.words)
+        [ initWordCmd 
         , cmds
         ]
     )
 
 
-initialModel : Store -> Model
-initialModel store =
+initialModel : Store -> Nav.Key -> WordRef -> GameState -> Model
+initialModel store key wordRef state =
     { store = store
+    , key = key
     , words = getWords store.lang
-    , state = Idle
+    , wordRef = wordRef
+    , state = state
     , modal = Nothing
     , time = Time.millisToPosix 0
     }
 
-type alias WordId =
-    String
-
 type Route
-  = WordRef String String
-  -- = WordRef Lang WordId
-
+  = WordUri String String
+  -- = WordUri (Maybe String)
 
 -- cf. https://github.com/elm/url/issues/24
 urlFragmentToPath : Url.Url -> Url.Url
@@ -209,7 +230,8 @@ urlFragmentToPath url =
 routeParser : Parser (Route -> a) a
 routeParser =
   oneOf
-    [ Url.Parser.map WordRef  ( string </> string )
+    [ Url.Parser.map WordUri  ( string </> string )
+    -- [ Url.Parser.map WordUri  ( fragment identity )
     ]
 
 -- sampleOngoingState : GameState
@@ -234,13 +256,61 @@ getWords lang =
         French ->
             Words.french
 
+hashids = Hashids.hashidsSimple "wordelm salt"
 
-randomWord : List WordToFind -> Random.Generator (Maybe WordToFind)
+pickWord : List WordToFind -> Int -> (String, Maybe WordToFind)
+pickWord words int = (Hashids.encode hashids int, LE.getAt int words)
+
+wordFromRef : WordRef -> Maybe WordToFind
+wordFromRef wordRef = 
+    let 
+        words = getWords ( I18n.langFromCode wordRef.lang)
+    in
+        Hashids.decode hashids wordRef.id
+            |> List.head 
+            |> Maybe.andThen (\int -> LE.getAt int words)
+
+wordOfTheDayTask : List WordToFind -> Task.Task Never (String, Maybe WordToFind)
+wordOfTheDayTask words = 
+    Time.now |> Task.map (wordOfTheDay words) 
+
+wordOfTheDay : List WordToFind -> Posix -> (String, Maybe WordToFind)
+wordOfTheDay words time = 
+    let 
+        -- conscruct a list key from the date
+        year  = Time.toYear Time.utc time
+        month = monthToInt (Time.toMonth Time.utc time)
+        day   = Time.toDay Time.utc time
+
+         -- this construct an int of the form ddmmyyyy
+         -- hopefully there should be enough variation from day to day with this ordering,
+        int = year + (month * 10000) + (day * 1000000)
+
+        index = remainderBy (List.length words) int 
+    in
+        pickWord words index
+
+monthToInt : Time.Month -> Int
+monthToInt month =
+  case month of
+    Time.Jan -> 1
+    Time.Feb -> 2
+    Time.Mar -> 3
+    Time.Apr -> 4
+    Time.May -> 5
+    Time.Jun -> 6
+    Time.Jul -> 7
+    Time.Aug -> 8
+    Time.Sep -> 9
+    Time.Oct -> 10
+    Time.Nov -> 11
+    Time.Dec -> 12
+
+randomWord : List WordToFind -> Random.Generator (String, Maybe WordToFind)
 randomWord words =
     Random.int 0 (List.length words - 1)
         |> Random.andThen
-            (\int -> words |> LE.getAt int |> Random.constant)
-
+            (\int -> pickWord words int |> Random.constant)
 
 validateGuess : Lang -> WordToFind -> UserInput -> Result String Guess
 validateGuess lang word input =
@@ -393,7 +463,7 @@ scrollToBottom id =
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg ({ store } as model) =
+update msg ({ store, wordRef } as model) =
     case ( msg, model.state ) of
         ( BackSpace, Ongoing word guesses input _ ) ->
             let
@@ -440,21 +510,36 @@ update msg ({ store } as model) =
         ( NewGame, _ ) ->
             let
                 newModel =
-                    initialModel store
+                    initialModel store model.key wordRef Idle
             in
             ( newModel
             , Random.generate NewWord (randomWord newModel.words)
             )
 
+        ( WordOfTheDay, _ ) ->
+            let
+                newModel =
+                    initialModel store model.key wordRef Idle
+            in
+            ( newModel
+            , Task.perform (\word -> NewWord word) (wordOfTheDayTask newModel.words) 
+            )
+
         ( NewTime time, _ ) ->
             ( { model | time = time }, Cmd.none )
 
-        ( NewWord (Just newWord), Idle ) ->
-            ( { model | state = Ongoing newWord [] "" Nothing }
-            , defocusMenuButtons
+        ( NewWord (hashid, Just newWord), Idle ) ->
+            ( { model
+                | state = Ongoing newWord [] "" Nothing
+                , wordRef = { wordRef | id = hashid } 
+              }
+              , Cmd.batch
+                [ defocusMenuButtons
+                , Nav.pushUrl model.key ("/#" ++ wordRef.lang ++ "/" ++ hashid)
+                ]
             )
 
-        ( NewWord Nothing, Idle ) ->
+        ( NewWord (_, Nothing), Idle ) ->
             ( { model | state = Errored LoadError }
             , Cmd.none
             )
@@ -512,7 +597,7 @@ update msg ({ store } as model) =
                     { store | lang = lang }
 
                 newModel =
-                    initialModel newStore
+                    initialModel newStore model.key { wordRef | lang = I18n.langToCode lang} Idle
             in
             ( newModel
             , Cmd.batch
@@ -941,7 +1026,7 @@ icon name =
 
 
 viewHeader : Model -> Html Msg
-viewHeader { store, modal } =
+viewHeader { store, modal, wordRef } =
     let
         btnClass active =
             classList
@@ -952,6 +1037,7 @@ viewHeader { store, modal } =
     nav [ class "navbar fixed-top navbar-dark bg-dark" ]
         [ div [ class "Header container flex-nowrap" ]
             [ span [ class "text-white fw-bold me-2" ] [ text "Wordlem" ]
+            -- , span [ class "text-white me-2" ] [ text (wordRefToString wordRef) ]
             , button
                 [ type_ "button"
                 , id "btn-lang-en"
@@ -988,6 +1074,14 @@ viewHeader { store, modal } =
                 [ icon "help"
                 , I18n.htmlText store.lang I18n.Help
                 ]
+            , button
+                [ type_ "button"
+                , id "btn-wordoftheday"
+                , class "HeaderButton btn btn-sm text-truncate"
+                , btnClass False
+                , onClick WordOfTheDay
+                ]
+                [ text "Word of the day" ]
             ]
         ]
 
