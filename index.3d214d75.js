@@ -6570,7 +6570,9 @@ type alias Process =
                     lang: defaultLang,
                     size: defaultSize
                 }, maybeWordRef);
-                return _Utils_Tuple2(A4($author$project$Main$initialModel, $author$project$Store$default($author$project$I18n$parseLang(wordRef.lang)), key, wordRef, $author$project$Game$Idle), $elm$core$Platform$Cmd$none);
+                return _Utils_Tuple2(A4($author$project$Main$initialModel, _Utils_update(store, {
+                    lang: $author$project$I18n$parseLang(wordRef.lang)
+                }), key, wordRef, $author$project$Game$Idle), $elm$core$Platform$Cmd$none);
             } else {
                 var error = _v1.a;
                 var wordRef = A2($elm$core$Maybe$withDefault, {
